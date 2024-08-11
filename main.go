@@ -1,15 +1,23 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"os"
-	"sync"
 	"time"
 )
 
-const fileSize int64 = 15874209967
-const readBufSize int64 = 128 * 4096
+type result struct {
+	Min   int16
+	Max   int16
+	Sum   int64
+	Count int64
+}
+
+func (r *result) Mean() int64 {
+	return r.Sum / r.Count
+}
 
 func main() {
 	whenStarted := time.Now()
@@ -21,44 +29,87 @@ func main() {
 	if len(os.Args) < 1 {
 		panic("pass file path")
 	}
-
 	filePath := os.Args[1]
 
-	wg := sync.WaitGroup{}
-
-	// concurrency 4 - 320ms
-	// concurrency 8 - 257ms
-	const concurrency = 8
-	const n int64 = fileSize / concurrency
-	var off int64 = 0
-
-	for range concurrency {
-		wg.Add(1)
-		go readSection(filePath, off, n, &wg)
-		off += n + 1
-	}
-
-	wg.Wait()
+	impl(filePath)
 }
 
-func readSection(filePath string, off int64, n int64, wg *sync.WaitGroup) {
+func impl(filePath string) {
 	file, openErr := os.OpenFile(filePath, os.O_RDONLY, 0)
 	if openErr != nil {
 		panic(openErr)
 	}
 	defer file.Close()
 
-	sect := io.NewSectionReader(file, off, n)
-	buf := make([]byte, readBufSize)
-	for {
-		_, readErr := sect.Read(buf)
-		if readErr == io.EOF {
-			break
-		}
-		if readErr != nil {
-			panic(readErr)
-		}
-	}
+	res := make(map[[100]byte]*result)
 
-	wg.Done()
+	r := bufio.NewReaderSize(file, 4096*4096)
+	buf := [100]byte{}
+out:
+	for {
+		bufI := 0
+
+		var b byte
+		var rec *result
+		var ok bool
+		for {
+			b = rd(r)
+			if b == 0 {
+				break out
+			}
+			if b == ';' {
+				for bufI < len(buf) {
+					buf[bufI] = 0
+					bufI++
+				}
+				rec, ok = res[buf]
+				if !ok {
+					rec = &result{}
+					rec.Max = -10000
+					res[buf] = rec
+				}
+				break
+			}
+			buf[bufI] = b
+			bufI++
+		}
+		sign := int16(1)
+		b = rd(r)
+		f := int16(0)
+		if b == '-' {
+			sign = -1
+		} else {
+			f = int16(b - '0')
+		}
+		for {
+			b = rd(r)
+			if b == '.' {
+				continue
+			}
+			if b == '\n' {
+				break
+			}
+			f = f*10 + int16(b-'0')
+		}
+		f = f * sign
+		if f > rec.Max {
+			rec.Max = f
+		}
+		if f < rec.Min {
+			rec.Min = f
+		}
+		rec.Sum += int64(f)
+		rec.Count++
+	}
+}
+
+func rd(r *bufio.Reader) byte {
+	b, readErr := r.ReadByte()
+	if readErr == io.EOF {
+		return 0
+	}
+	if readErr != nil {
+		panic(readErr)
+	}
+	return b
 }
